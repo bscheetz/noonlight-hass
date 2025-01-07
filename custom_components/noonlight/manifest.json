@@ -9,7 +9,7 @@
   "integration_type": "device",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/konnected-io/noonlight-hass/issues",
-  "requirements": ["noonlight>=0.1.1"],
+  "requirements": ["noonlight>=0.1.2"],
   "single_config_entry": true,
-  "version":"v1.2.0"
+  "version":"v2.0.0"
 }

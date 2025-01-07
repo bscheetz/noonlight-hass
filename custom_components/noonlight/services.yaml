@@ -4,7 +4,7 @@ create_alarm:
   fields:
     service:
       name: Service
-      description: Service that the alarm should call (police, fire, medical)
+      description: Service that the alarm should call (police, fire, medical, other)
       required: true
       example: "police"
       default: "police"
@@ -14,3 +14,4 @@ create_alarm:
             - "police"
             - "fire"
             - "medical"
+            - "other"
