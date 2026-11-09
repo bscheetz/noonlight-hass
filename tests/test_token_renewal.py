@@ -1,5 +1,6 @@
 """Tests for Noonlight API token renewal."""
 
+import asyncio
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -55,13 +56,11 @@ async def _advance(hass: HomeAssistant, freezer: FrozenDateTimeFactory, delta):
 async def _setup_entry(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> MockConfigEntry:
-    """Set up the entry and let the initial token check run."""
+    """Set up the entry; the renewal task runs its first check right away."""
     entry = MockConfigEntry(domain=DOMAIN, data=CONFIG)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    # The first check is scheduled for "now"; fire it.
-    await _advance(hass, freezer, timedelta(seconds=1))
     return entry
 
 
@@ -107,7 +106,7 @@ async def test_renewal_retries_after_network_error(
     """Renewal keeps retrying after a network error and eventually recovers."""
     aioclient_mock.post(TOKEN_URL, exc=aiohttp.ClientConnectionError("DNS timeout"))
     with patch(
-        "custom_components.noonlight.persistent_notification.create"
+        "custom_components.noonlight.persistent_notification.async_create"
     ) as mock_notify:
         await _setup_entry(hass, freezer)
     assert aioclient_mock.call_count == 1
@@ -167,29 +166,38 @@ async def test_unload_stops_renewal(
         assert mock_check.call_count == 1
 
 
-async def test_queued_check_does_not_run_after_unload(hass: HomeAssistant) -> None:
-    """A timer callback already queued at unload must not contact the API."""
+async def test_unload_cancels_in_flight_renewal(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Unloading mid-request cancels the renewal; it doesn't finish or retry."""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def hang(self, force_renew=False):
+        started.set()
+        try:
+            await asyncio.Event().wait()  # a request that never returns
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
     with (
-        patch("custom_components.noonlight.async_track_point_in_utc_time") as track,
         patch.object(
-            NoonlightIntegration, "check_api_token", return_value=True, autospec=True
+            NoonlightIntegration, "check_api_token", side_effect=hang, autospec=True
         ) as mock_check,
+        patch(
+            "custom_components.noonlight.persistent_notification.async_create"
+        ) as mock_notify,
     ):
-        entry = MockConfigEntry(domain=DOMAIN, data=CONFIG)
-        entry.add_to_hass(hass)
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        # capture the callback to check_api_token
-        check = track.call_args.args[1]
+        entry = await _setup_entry(hass, freezer)
+        await started.wait()
 
-        # integration is unloaded
         assert await hass.config_entries.async_unload(entry.entry_id)
-        # call the callback, but immediately return because that callback's been invalidated
-        # by the unload
-        await check(dt_util.utcnow())
+        assert cancelled.is_set()
 
-        # validate that check_api_token was not called
-        mock_check.assert_not_called()
-        assert track.call_count == 1
+        await _advance(hass, freezer, timedelta(hours=1))
+        assert mock_check.call_count == 1
+        mock_notify.assert_not_called()
 
 
 async def test_recovery_restores_normal_check_interval(
